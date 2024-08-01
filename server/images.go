@@ -233,6 +233,10 @@ func GetManifest(mp ModelPath) (*Manifest, string, error) {
 		return nil, "", err
 	}
 
+	if err := ValidateManifest(manifest, fp); err != nil {
+		return nil, "", err
+	}
+
 	return manifest, shaStr, nil
 }
 
@@ -995,6 +999,10 @@ func pullModelManifest(ctx context.Context, mp ModelPath, regOpts *registryOptio
 
 	var m *Manifest
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, err
+	}
+
+	if err := ValidateManifest(m, requestURL.String()); err != nil {
 		return nil, err
 	}
 

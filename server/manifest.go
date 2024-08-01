@@ -13,6 +13,7 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
+const ManifestSchemaVersion = 2
 type Manifest struct {
 	SchemaVersion int      `json:"schemaVersion"`
 	MediaType     string   `json:"mediaType"`
@@ -57,6 +58,18 @@ func (m *Manifest) RemoveLayers() error {
 	return nil
 }
 
+func ValidateManifest(m *Manifest, path string) error {
+        if m.SchemaVersion != ManifestSchemaVersion {
+		return fmt.Errorf("unknown manifest schema (got %d, expected %d): %s", m.SchemaVersion, ManifestSchemaVersion, path)
+	}
+
+        if m.Config == nil {
+		return fmt.Errorf("invalid manifest: %s", path)
+        }
+
+	return nil
+}
+
 func ParseNamedManifest(n model.Name) (*Manifest, error) {
 	if !n.IsFullyQualified() {
 		return nil, model.Unqualified(n)
@@ -83,6 +96,10 @@ func ParseNamedManifest(n model.Name) (*Manifest, error) {
 
 	sha256sum := sha256.New()
 	if err := json.NewDecoder(io.TeeReader(f, sha256sum)).Decode(&m); err != nil {
+		return nil, err
+	}
+
+	if err := ValidateManifest(&m, p); err != nil {
 		return nil, err
 	}
 
