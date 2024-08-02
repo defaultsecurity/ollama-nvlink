@@ -144,6 +144,9 @@ var (
 	SchedSpread = Bool("OLLAMA_SCHED_SPREAD")
 	// IntelGPU enables experimental Intel GPU detection.
 	IntelGPU = Bool("OLLAMA_INTEL_GPU")
+        // Set via OLLAMA_SPLIT_MODE_ROWS in the environment
+	SplitModeRows  = Bool("OLLAMA_SPLIT_MODE_ROWS")
+	
 )
 
 func String(s string) func() string {
@@ -266,6 +269,7 @@ func AsMap() map[string]EnvVar {
 		ret["GPU_DEVICE_ORDINAL"] = EnvVar{"GPU_DEVICE_ORDINAL", GpuDeviceOrdinal(), "Set which AMD devices are visible"}
 		ret["HSA_OVERRIDE_GFX_VERSION"] = EnvVar{"HSA_OVERRIDE_GFX_VERSION", HsaOverrideGfxVersion(), "Override the gfx used for all detected AMD GPUs"}
 		ret["OLLAMA_INTEL_GPU"] = EnvVar{"OLLAMA_INTEL_GPU", IntelGPU(), "Enable experimental Intel GPU detection"}
+		ret["OLLAMA_SPLIT_MODE_ROWS"] = EnvVar{"OLLAMA_SPLIT_MODE_ROWS", SplitModeRows(), "Enable split mode row"}
 	}
 	return ret
 }
