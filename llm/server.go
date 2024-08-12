@@ -33,7 +33,7 @@ type LlamaServer interface {
 	Ping(ctx context.Context) error
 	WaitUntilRunning(ctx context.Context) error
 	Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error
-	Embed(ctx context.Context, input []string) (*EmbedResponse, error)
+	Embedding(ctx context.Context, input string) ([]float32, error)
 	Tokenize(ctx context.Context, content string) ([]int, error)
 	Detokenize(ctx context.Context, tokens []int) (string, error)
 	Close() error
@@ -44,11 +44,12 @@ type LlamaServer interface {
 
 // llmServer is an instance of the llama.cpp server
 type llmServer struct {
-	port    int
-	cmd     *exec.Cmd
-	done    chan error // Channel to signal when the process exits
-	status  *StatusWriter
-	options api.Options
+	port        int
+	cmd         *exec.Cmd
+	done        chan error // Channel to signal when the process exits
+	status      *StatusWriter
+	options     api.Options
+	numParallel int
 
 	estimate    MemoryEstimate
 	totalLayers uint64
@@ -124,8 +125,9 @@ func NewLlamaServer(gpus gpu.GpuInfoList, model string, ggml *GGML, adapters, pr
 		}
 	}
 
-	// On linux, over-allocating CPU memory will almost always result in an error
-	if runtime.GOOS == "linux" {
+	// On linux and windows, over-allocating CPU memory will almost always result in an error
+	// Darwin has fully dynamic swap so has no direct concept of free swap space
+	if runtime.GOOS != "darwin" {
 		systemMemoryRequired := estimate.TotalSize - estimate.VRAMSize
 		available := systemFreeMemory + systemSwapFreeMemory
 		if systemMemoryRequired > available {
@@ -260,8 +262,14 @@ func NewLlamaServer(gpus gpu.GpuInfoList, model string, ggml *GGML, adapters, pr
 		params = append(params, "--mlock")
 	}
 
-	if opts.UseNUMA {
-		params = append(params, "--numa")
+	if gpu.IsNUMA() {
+		numaMode := "distribute"
+		if runtime.GOOS == "linux" {
+			if _, err := exec.LookPath("numactl"); err == nil {
+				numaMode = "numactl"
+			}
+		}
+		params = append(params, "--numa", numaMode)
 	}
 
 	params = append(params, "--parallel", strconv.Itoa(numParallel))
@@ -341,6 +349,7 @@ func NewLlamaServer(gpus gpu.GpuInfoList, model string, ggml *GGML, adapters, pr
 			status:      NewStatusWriter(os.Stderr),
 			options:     opts,
 			estimate:    estimate,
+			numParallel: numParallel,
 			sem:         semaphore.NewWeighted(int64(numParallel)),
 			totalLayers: ggml.KV().BlockCount() + 1,
 			gpus:        gpus,
@@ -878,16 +887,15 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 	return nil
 }
 
-type EmbedRequest struct {
-	Content []string `json:"content"`
+type EmbeddingRequest struct {
+	Content string `json:"content"`
 }
 
-type EmbedResponse struct {
-	Embedding       [][]float32 `json:"embedding"`
-	PromptEvalCount int         `json:"prompt_n"`
+type EmbeddingResponse struct {
+	Embedding []float32 `json:"embedding"`
 }
 
-func (s *llmServer) Embed(ctx context.Context, input []string) (*EmbedResponse, error) {
+func (s *llmServer) Embedding(ctx context.Context, input string) ([]float32, error) {
 	if err := s.sem.Acquire(ctx, 1); err != nil {
 		slog.Error("Failed to acquire semaphore", "error", err)
 		return nil, err
@@ -902,18 +910,18 @@ func (s *llmServer) Embed(ctx context.Context, input []string) (*EmbedResponse, 
 		return nil, fmt.Errorf("unexpected server status: %s", status.ToString())
 	}
 
-	data, err := json.Marshal(EmbedRequest{Content: input})
+	data, err := json.Marshal(EmbeddingRequest{Content: input})
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling embed data: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/embedding", s.port), bytes.NewBuffer(data))
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/embedding", s.port), bytes.NewBuffer(data))
 	if err != nil {
 		return nil, fmt.Errorf("error creating embed request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(r)
 	if err != nil {
 		return nil, fmt.Errorf("do embedding request: %w", err)
 	}
@@ -929,12 +937,12 @@ func (s *llmServer) Embed(ctx context.Context, input []string) (*EmbedResponse, 
 		return nil, fmt.Errorf("%s", body)
 	}
 
-	var e EmbedResponse
+	var e EmbeddingResponse
 	if err := json.Unmarshal(body, &e); err != nil {
 		return nil, fmt.Errorf("unmarshal tokenize response: %w", err)
 	}
 
-	return &e, nil
+	return e.Embedding, nil
 }
 
 type TokenizeRequest struct {
